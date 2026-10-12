@@ -1,0 +1,59 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- DPO try to increase the gap between reject and accept 
+the loss function is designed for this behaviour.
+
+because DPO is increase the diff in reject_probability and accept_probability  so if 
+
+{
+    "input", 
+    "accept",
+    "reject"
+}
+
+reject = "what's your question ?"
+accept = "what's your question"
+
+now DPO try to decrease the probability of your(token) in reject face but try to increase in accept.
+
+actually this problem actually exists. 
+
+if yes how GRPO solve this problem. what the solution of it. 
+
+

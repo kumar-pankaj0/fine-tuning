@@ -1,0 +1,255 @@
+"""
+QLoRA fine-tuning for Mistral-7B-Instruct.
+
+Hyperparameters and defaults:
+  Learning Rate        2e-4        Step size for adapter weight updates.
+  LoRA Rank (r)        16          Adapter capacity / trainable-parameter count.
+  LoRA Alpha           2*r         Scales adapter output by alpha/r.
+  Effective Batch Size 16          batch_size * grad_accum_steps.
+  Epochs               3           Number of passes over the training set.
+  LoRA Dropout         0           Regularization on adapter activations.
+  Weight Decay         0.01        Penalty on weight magnitude.
+  LR Scheduler         cosine      Linear or cosine, with 5-10% warmup.
+
+Usage
+  python train_qlora.py --rank 32 --lr 1e-4 --epochs 2
+  python train_qlora.py --rank 32 --lr 1e-4 --epochs 2 --merge
+"""
+
+import argparse
+import os
+
+import torch
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    EarlyStoppingCallback,
+    TrainerCallback,
+)
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
+from datasets import load_dataset
+
+BASE_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+DATA_FILE = data_path  # ADD YOUR JSON DATAFILE!
+RESPONSE_TEMPLATE = "[/INST]"  # everything after this is the assistant turn
+OUTPUT_ROOT = "./mistral-lora"
+
+SYSTEM_PROMPT = (
+    # ADD A SYSTEM PROMPT HERE
+)
+
+
+class PrintLossCallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs:
+            if "loss" in logs:
+                print(f"Step {state.global_step} | Train Loss: {logs['loss']:.4f}")
+            if "eval_loss" in logs:
+                print(f"Step {state.global_step} | Eval Loss: {logs['eval_loss']:.4f}")
+
+
+def build_dataset(tokenizer, data_file=DATA_FILE, eval_fraction=0.1, seed=42):
+    dataset = load_dataset("HuggingFaceTB/smoltalk")
+    def to_chat_text(example):
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": example["prompt"]},
+            {"role": "assistant", "content": example["completion"]},
+        ]
+        return {"text": tokenizer.apply_chat_template(messages, tokenize=False)}
+
+    dataset = dataset.map(to_chat_text)
+
+    split = dataset.train_test_split(test_size=eval_fraction, seed=seed)
+    return split["train"], split["test"]
+
+
+def load_base_model():
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL,
+        quantization_config=bnb_config,
+        device_map="auto",
+    )
+    return prepare_model_for_kbit_training(model)
+
+
+def build_lora_model(rank, alpha, dropout):
+    model = load_base_model()
+    lora_config = LoraConfig(
+        r=rank,
+        lora_alpha=alpha,
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+        lora_dropout=dropout,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    return get_peft_model(model, lora_config)
+
+
+def train(hp, train_ds, eval_ds, tokenizer, collator, output_dir):
+    model = build_lora_model(
+        rank=hp["rank"],
+        alpha=hp["lora_alpha"],
+        dropout=hp["lora_dropout"],
+    )
+    model.print_trainable_parameters()
+
+    sft_config = SFTConfig(
+        output_dir=output_dir,
+        per_device_train_batch_size=hp["per_device_train_batch_size"],
+        gradient_accumulation_steps=hp["gradient_accumulation_steps"],
+        num_train_epochs=hp["epochs"],
+        learning_rate=hp["learning_rate"],
+        lr_scheduler_type=hp["lr_scheduler_type"],
+        warmup_ratio=hp["warmup_ratio"],
+        weight_decay=hp["weight_decay"],
+        bf16=True,
+        gradient_checkpointing=True,
+        logging_steps=10,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        max_seq_length=32768,
+        report_to="none",
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        args=sft_config,
+        train_dataset=train_ds,
+        eval_dataset=eval_ds,
+        data_collator=collator,
+        callbacks=[
+            EarlyStoppingCallback(early_stopping_patience=3),
+            PrintLossCallback(),
+        ],
+    )
+    trainer.train()
+    metrics = trainer.evaluate()
+
+    return trainer, metrics
+
+
+def save_adapter(trainer, tokenizer, output_dir):
+    """Save just the LoRA adapter (a few hundred MB) plus the tokenizer."""
+    trainer.save_model(output_dir)
+    tokenizer.save_pretrained(output_dir)
+    print(f"Adapter saved to {output_dir}")
+
+
+def merge_and_save(base_model_name, adapter_dir, merged_dir):
+    """Fold the LoRA adapter back into the base weights for standalone serving.
+
+    Reloads the base model at full bf16 precision (not the 4-bit
+    quantized copy used during training) so the merge itself doesn't
+    compound quantization error, then writes out a standard dense
+    model you can load with AutoModelForCausalLM like any other
+    checkpoint -- no PEFT dependency needed at inference time.
+    """
+    print(f"Loading base model for merge: {base_model_name}")
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_name,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    merged_model = PeftModel.from_pretrained(base_model, adapter_dir)
+    merged_model = merged_model.merge_and_unload()
+
+    merged_model.save_pretrained(merged_dir, safe_serialization=True)
+    tokenizer = AutoTokenizer.from_pretrained(adapter_dir)
+    tokenizer.save_pretrained(merged_dir)
+    print(f"Merged model saved to {merged_dir}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_file", default=DATA_FILE)
+    parser.add_argument("--eval_fraction", type=float, default=0.1)
+    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--rank", type=int, default=16)
+    parser.add_argument("--lora_alpha", type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--grad_accum", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--scheduler", choices=["linear", "cosine"], default="cosine")
+    parser.add_argument("--warmup_ratio", type=float, default=0.05)
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="Merge the LoRA adapter into the base model weights after training.",
+    )
+    parser.add_argument(
+        "--merged_dir",
+        default=None,
+        help=f"Output directory for the merged model (default: {OUTPUT_ROOT}/merged). Only used with --merge.",
+    )
+    args = parser.parse_args()
+
+    os.makedirs(OUTPUT_ROOT, exist_ok=True)
+
+    lora_alpha = args.lora_alpha if args.lora_alpha is not None else 2 * args.rank
+
+    hp = {
+        "learning_rate": args.lr,
+        "rank": args.rank,
+        "lora_alpha": lora_alpha,
+        "per_device_train_batch_size": args.batch_size,
+        "gradient_accumulation_steps": args.grad_accum,
+        "epochs": args.epochs,
+        "lora_dropout": args.dropout,
+        "weight_decay": args.weight_decay,
+        "lr_scheduler_type": args.scheduler,
+        "warmup_ratio": args.warmup_ratio,
+    }
+
+    print("Hyperparameters:", hp)
+
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+    tokenizer.pad_token = tokenizer.eos_token
+    train_ds, eval_ds = build_dataset(
+        tokenizer, data_file=args.data_file, eval_fraction=args.eval_fraction
+    )
+    collator = DataCollatorForCompletionOnlyLM(
+        response_template=RESPONSE_TEMPLATE, tokenizer=tokenizer
+    )
+
+    trainer, metrics = train(
+        hp,
+        train_ds,
+        eval_ds,
+        tokenizer,
+        collator,
+        output_dir=os.path.join(OUTPUT_ROOT, "run"),
+    )
+    print("Final eval metrics:", metrics)
+
+    adapter_dir = os.path.join(OUTPUT_ROOT, "final")
+    save_adapter(trainer, tokenizer, adapter_dir)
+
+    if args.merge:
+        merged_dir = args.merged_dir or os.path.join(OUTPUT_ROOT, "merged")
+        merge_and_save(BASE_MODEL, adapter_dir, merged_dir)
+
+
+if __name__ == "__main__":
+    main()
