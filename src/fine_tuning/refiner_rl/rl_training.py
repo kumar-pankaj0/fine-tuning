@@ -4,12 +4,13 @@ from unsloth import FastLanguageModel
 from trl import GRPOTrainer, GRPOConfig
 from peft import LoraConfig
 from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import BitsAndBytesConfig
+from unsloth.chat_templates import get_chat_template
 
 POLICY_MODEL = "pankaj0/llama-3.2-3b-asr-refiner-merged"
 JUDGE_MODEL = "pankaj0/qwen-post-refine-judge"
 
-
-from unsloth.chat_templates import get_chat_template
 
 # Setup Llama-3.x chat formatting
 
@@ -26,22 +27,38 @@ policy_tokenizer = get_chat_template(
     policy_tokenizer,
     chat_template="llama-3.1",
 )
-# Load judge model on dedicated GPU (device_map={"": 1}) in 4-bit
-judge_model, judge_tokenizer = FastLanguageModel.from_pretrained(
-    model_name=JUDGE_MODEL,
-    max_seq_length=2048,
-    dtype=None,
+
+# Load judge model on dedicated GPU (cuda:1) with standard Transformers
+JUDGE_DEVICE = (
+    "cuda:1"
+    if torch.cuda.device_count() > 1
+    else ("cuda:0" if torch.cuda.is_available() else "cpu")
+)
+
+judge_bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
-    device_map=({"": 1} if torch.cuda.device_count() > 1 else None),
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.float16,
+)
+
+judge_tokenizer = AutoTokenizer.from_pretrained(JUDGE_MODEL)
+assert judge_tokenizer is not None, "Tokenizer Failed to Load"
+judge_model = AutoModelForCausalLM.from_pretrained(
+    JUDGE_MODEL,
+    quantization_config=judge_bnb_config,
+    device_map={"": JUDGE_DEVICE} if "cuda" in JUDGE_DEVICE else None,
 )
 
 # Configure left-padding required for causal LM batch generation
+if judge_tokenizer.pad_token is None:
+    judge_tokenizer.pad_token = judge_tokenizer.eos_token
 if judge_tokenizer.pad_token_id is None:
     judge_tokenizer.pad_token_id = judge_tokenizer.eos_token_id
 judge_tokenizer.padding_side = "left"
 
-# Enable Unsloth native 2x inference speed
-FastLanguageModel.for_inference(judge_model)
+# Fallback chat template if not baked in tokenizer config
+if getattr(judge_tokenizer, "chat_template", None) is None:
+    judge_tokenizer = get_chat_template(judge_tokenizer, chat_template="chatml")
 
 # Define the judge's system prompt globally to allow reuse
 judge_system_prompt = """
@@ -183,7 +200,15 @@ def judge_reward(completions, prompts=None, **kwargs):
     if prompts is None:
         prompts = kwargs.get("prompts", kwargs.get("prompt", []))
 
+    if isinstance(prompts, str):
+        prompts = [prompts]
+    if isinstance(completions, str):
+        completions = [completions]
+
     raw_inputs = kwargs.get("raw_asr") or kwargs.get("raw_asr_text") or prompts
+    if isinstance(raw_inputs, str):
+        raw_inputs = [raw_inputs]
+
     batch_inputs = formatting_judge_prompts_func(
         raw_inputs,
         completions,
@@ -198,27 +223,32 @@ def judge_reward(completions, prompts=None, **kwargs):
         padding=True,
         truncation=True,
         max_length=2048,
-    ).to(judge_model.device)
+    ).to(JUDGE_DEVICE)
 
     with torch.no_grad():
         outputs = judge_model.generate(
             input_ids=inputs.input_ids,
             attention_mask=inputs.attention_mask,
             max_new_tokens=128,
-            temperature=0.1,
             do_sample=False,
             use_cache=True,
             pad_token_id=judge_tokenizer.pad_token_id,
         )
 
     prompt_len = inputs.input_ids.shape[1]
-    generated_tokens = outputs[:, prompt_len:]
+    generated_tokens = outputs[:, prompt_len:].cpu()
     responses = judge_tokenizer.batch_decode(
         generated_tokens,
         skip_special_tokens=True,
     )
 
-    return [_parse_judge_score(resp) for resp in responses]
+    rewards = []
+    for resp in responses:
+        try:
+            rewards.append(_parse_judge_score(resp))
+        except Exception:
+            rewards.append(None)
+    return rewards
 
 
 lora_config = LoraConfig(
@@ -274,16 +304,20 @@ grpo_config = GRPOConfig(
     lr_scheduler_type="cosine",
     optim="paged_adamw_8bit",
     temperature=0.7,
-    bf16=True,
+    bf16=False,
+    fp16=True,
     seed=42,
     ddp_find_unused_parameters=False,
     logging_steps=5,
-    max_completion_length=256,
+    max_completion_length=512,
     save_strategy="steps",
     save_steps=50,
     report_to="none",
     warmup_steps=0.1,
 )
+
+# Pin trainer to single GPU (cuda:0), prevents automatic DataParallel across cuda:0 and cuda:1
+grpo_config._n_gpu = 1
 
 grpo_trainer = GRPOTrainer(
     model=policy_model,
@@ -292,3 +326,7 @@ grpo_trainer = GRPOTrainer(
     peft_config=lora_config,
     train_dataset=train_dataset,
 )
+
+
+if __name__ == "__main__":
+    grpo_trainer.train()
