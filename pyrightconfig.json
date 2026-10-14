@@ -1,0 +1,11 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "basic",
+  "analysis": {
+    "indexing": false,
+    "diagnosticMode": "openFilesOnly",
+    "useLibraryCodeForTypes": false
+  }
+}
