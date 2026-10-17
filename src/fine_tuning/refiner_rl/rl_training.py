@@ -11,6 +11,7 @@ import json
 import os
 import warnings
 import logging
+from transformers import TrainerCallback
 
 
 POLICY_MODEL = "pankaj0/llama-3.2-3b-asr-refiner-merged"
@@ -22,6 +23,35 @@ logging.getLogger("unsloth").setLevel(logging.ERROR)
 
 LOG_FILE = ".log/grpo_traning.jsonl"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+
+class PrintKLCallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs and "kl" in logs:
+            kl = logs.get("kl")
+            loss = logs.get("loss")
+            avg_reward = logs.get("reward")
+            lr = logs.get("learning_rate")
+
+            print(
+                f"[Step {state.global_step}] "
+                f"KL: {f'{kl:.4f}' if kl is not None else 'N/A'} | "
+                f"Loss: {f'{loss:.4f}' if loss is not None else 'N/A'} | "
+                f"Reward: {f'{avg_reward:.4f}' if avg_reward is not None else 'N/A'} | "
+                f"LR: {f'{lr:.2e}' if lr is not None else 'N/A'}"
+            )
+
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                metric_data = {
+                    "log_type": "step_summary",
+                    "step": state.global_step,
+                    "kl_divergence": kl,
+                    "loss": loss,
+                    "avg_reward": avg_reward,
+                    "learning_rate": lr,
+                }
+                f.write(json.dumps(metric_data, ensure_ascii=False) + "\n")
+
 
 policy_model, policy_tokenizer = FastLanguageModel.from_pretrained(
     model_name=POLICY_MODEL,
@@ -353,6 +383,7 @@ grpo_trainer = GRPOTrainer(
     args=grpo_config,
     peft_config=lora_config,
     train_dataset=train_dataset,
+    callbacks=[PrintKLCallback()],
 )
 
 
