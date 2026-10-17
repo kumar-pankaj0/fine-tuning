@@ -58,6 +58,22 @@ policy_model, policy_tokenizer = FastLanguageModel.from_pretrained(
     device_map=({"": 0} if torch.cuda.device_count() > 1 else None),
 )
 
+policy_model = FastLanguageModel.get_peft_model(
+    policy_model,
+    r=64,
+    lora_alpha=128,
+    bias="none",
+    task_type="CAUSAL_LM",
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "up_proj",
+        "down_proj",
+    ],
+)
+
 policy_tokenizer = get_chat_template(
     policy_tokenizer,
     chat_template="llama-3.1",
@@ -305,41 +321,28 @@ def judge_reward(completions, prompts=None, **kwargs):
     return rewards
 
 
-lora_config = LoraConfig(
-    r=64,
-    lora_alpha=128,
-    bias="none",
-    task_type="CAUSAL_LM",
-    target_modules=[
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "up_proj",
-        "down_proj",
-    ],
-)
-
-
 # Use our newly parsed training dataset
 
 
 def _formatting_policy_model_func(batch):
     convos = []
-    for raw, _ in zip(batch["input"], batch["accept"]):
+    raw_asr = []
+    for item in batch["input"]:
         messages = [
             {"role": "system", "content": policy_system_prompt},
-            {"role": "user", "content": f"Raw transcript:\n{raw}"},
+            {"role": "user", "content": f"Raw transcript:\n{item['raw_asr']}"},
         ]
         convos.append(
             policy_tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
         )
-    return {"prompt": convos, "raw_asr": batch["input"]}
+        raw_asr.append(item["raw_asr"])
+
+    return {"prompt": convos, "raw_asr": raw_asr}
 
 
-def format_dataset(policy_dataset_path: str = "/content/datasets/train_data.json"):
+def format_dataset(policy_dataset_path: str = "./datasets/data_full.json"):
     dataset = load_dataset("json", data_files=policy_dataset_path, split="train")
 
     train_dataset = dataset.map(_formatting_policy_model_func, batched=True)
@@ -362,7 +365,7 @@ grpo_config = GRPOConfig(
     fp16=True,
     seed=42,
     ddp_find_unused_parameters=False,
-    logging_steps=5,
+    logging_steps=1,
     max_completion_length=512,
     save_strategy="steps",
     save_steps=50,
@@ -378,7 +381,6 @@ grpo_trainer = GRPOTrainer(
     model=policy_model,
     reward_funcs=[judge_reward],
     args=grpo_config,
-    peft_config=lora_config,
     train_dataset=train_dataset,
     callbacks=[PrintKLCallback()],
 )
