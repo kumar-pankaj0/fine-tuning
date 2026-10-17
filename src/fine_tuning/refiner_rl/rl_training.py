@@ -386,6 +386,7 @@ grpo_trainer = GRPOTrainer(
     train_dataset=train_dataset,
     callbacks=[PrintKLCallback()],
 )
+grpo_trainer.remove_callback(PrinterCallback)
 
 
 if __name__ == "__main__":
