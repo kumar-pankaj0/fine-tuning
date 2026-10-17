@@ -7,13 +7,21 @@ from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import BitsAndBytesConfig
 from unsloth.chat_templates import get_chat_template
+import json
+import os
+import warnings
+import logging
+
 
 POLICY_MODEL = "pankaj0/llama-3.2-3b-asr-refiner-merged"
 JUDGE_MODEL = "pankaj0/qwen-post-refine-judge"
 
+os.environ["UNSLOTH_ENABLE_LOGGING"] = "0"
+warnings.filterwarnings("ignore")
+logging.getLogger("unsloth").setLevel(logging.ERROR)
 
-# Setup Llama-3.x chat formatting
-
+LOG_FILE = ".log/grpo_traning.jsonl"
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 policy_model, policy_tokenizer = FastLanguageModel.from_pretrained(
     model_name=POLICY_MODEL,
@@ -248,6 +256,25 @@ def judge_reward(completions, prompts=None, **kwargs):
             rewards.append(_parse_judge_score(resp))
         except Exception:
             rewards.append(None)
+
+    # --------------- logging -------------------
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        for raw_item, completion_item, reward, policy_prompt, judge_prompt in zip(
+            raw_inputs, completions, rewards, prompts, batch_inputs
+        ):
+            # grpo_trainer pass arguments in {"role", ... , "content" : .. } format
+            raw_input = _extract_text(raw_item)
+            refined_output = _extract_text(completion_item)
+            policy_prompt = _extract_text(policy_prompt)
+
+            record = {
+                "raw_input": raw_input,
+                "refined_output": refined_output,
+                "rewards": reward,
+                "policy_prompt": policy_prompt,
+                "judge_prompt": judge_prompt,
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
     return rewards
 
 
@@ -314,6 +341,7 @@ grpo_config = GRPOConfig(
     save_steps=50,
     report_to="none",
     warmup_steps=0.1,
+    beta=0.4,
 )
 
 # Pin trainer to single GPU (cuda:0), prevents automatic DataParallel across cuda:0 and cuda:1
