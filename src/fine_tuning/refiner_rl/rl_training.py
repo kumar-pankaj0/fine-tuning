@@ -31,24 +31,21 @@ class PrintKLCallback(TrainerCallback):
             kl = logs.get("kl")
             loss = logs.get("loss")
             avg_reward = logs.get("reward")
-            lr = logs.get("learning_rate")
 
             print(
                 f"[Step {state.global_step}] "
                 f"KL: {f'{kl:.4f}' if kl is not None else 'N/A'} | "
                 f"Loss: {f'{loss:.4f}' if loss is not None else 'N/A'} | "
-                f"Reward: {f'{avg_reward:.4f}' if avg_reward is not None else 'N/A'} | "
-                f"LR: {f'{lr:.2e}' if lr is not None else 'N/A'}"
+                f"Avg Reward: {f'{avg_reward:.4f}' if avg_reward is not None else 'N/A'}"
             )
 
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 metric_data = {
                     "log_type": "step_summary",
                     "step": state.global_step,
-                    "kl_divergence": kl,
+                    "kl": kl,
                     "loss": loss,
                     "avg_reward": avg_reward,
-                    "learning_rate": lr,
                 }
                 f.write(json.dumps(metric_data, ensure_ascii=False) + "\n")
 
