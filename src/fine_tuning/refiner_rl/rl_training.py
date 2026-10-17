@@ -12,7 +12,10 @@ import os
 import warnings
 import logging
 from transformers import TrainerCallback
+import transformers
 
+transformers.logging.set_verbosity_error()
+from transformers.trainer_callback import PrinterCallback
 
 POLICY_MODEL = "pankaj0/llama-3.2-3b-asr-refiner-merged"
 JUDGE_MODEL = "pankaj0/qwen-post-refine-judge"
@@ -63,7 +66,6 @@ policy_model = FastLanguageModel.get_peft_model(
     r=64,
     lora_alpha=128,
     bias="none",
-    task_type="CAUSAL_LM",
     target_modules=[
         "q_proj",
         "k_proj",
