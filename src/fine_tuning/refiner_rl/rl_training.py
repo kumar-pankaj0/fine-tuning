@@ -197,48 +197,41 @@ def _extract_continuous_judge_score(
     sample_idx: int,
     tokenizer,
 ) -> tuple[float | None, dict, str]:
-    """
-    Finds the generated digit token for each JSON rubric key and computes
-    the continuous probability-weighted expected score from the model's logits.
-    """
     keys = ["faithfulness", "noise_removed", "errors_fixed", "formatting"]
     response_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
 
-    # Decode token-by-token so we can map character positions to exact generation steps
+    # Decode each generated token individually to map char index -> generation step
     token_pieces = [tokenizer.decode([tid]) for tid in gen_ids]
     full_str = "".join(token_pieces)
 
-    # Map each character index in full_str back to its generation step index
     char_to_step = []
     for step_idx, piece in enumerate(token_pieces):
         char_to_step.extend([step_idx] * len(piece))
 
     continuous_scores = {}
     for k in keys:
-        # Match `"key": <digit>` in the generated string
-        pattern = rf'"{k}"\s*:\s*(\d)'
+        # Optional quotes around the key so both `faithfulness: 9` and `"faithfulness": 9` match
+        pattern = rf'["\']?{k}["\']?\s*:\s*(\d)'
         match = re.search(pattern, full_str.lower())
+
         if not match:
-            print(f"[Judge] Missing key '{k}'. Skipping: {response_text.strip()}")
+            print(f"[Judge Parse Error] Missing key '{k}'. Skipping: {response_text.strip()}")
             return None, {}, response_text
 
-        # Find the character index of the captured digit and map to generation step
         digit_char_idx = match.start(1)
+        if digit_char_idx >= len(char_to_step):
+            return None, {}, response_text
+
         step_idx = char_to_step[digit_char_idx]
 
-        # Extract logits at that exact generation step for this batch item
-        # step_scores[step_idx] has shape: (batch_size, vocab_size)
-        step_logits = step_scores[step_idx][sample_idx]  # shape: (vocab_size,)
-        digit_logits = step_logits[DIGIT_TOKEN_IDS].float()  # shape: (10,)
-
-        # Softmax over only the digits 0..9 to get probability distribution
+        # Extract logits for digits 0..9 at that exact generation step
+        step_logits = step_scores[step_idx][sample_idx]
+        digit_logits = step_logits[DIGIT_TOKEN_IDS].float()
         probs = F.softmax(digit_logits, dim=-1)
 
-        # Expected continuous score: sum(d * P(d)) for d in 0..9
         expected_val = torch.sum(probs * DIGIT_VALUES).item()
         continuous_scores[k] = round(expected_val, 6)
 
-    # Hard penalty if faithfulness is heavily weighted toward 0 (< 0.5 expected)
     if continuous_scores["faithfulness"] < 0.5:
         return 0.0, continuous_scores, response_text
 
