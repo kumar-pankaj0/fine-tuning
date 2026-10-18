@@ -12,10 +12,10 @@ import os
 import warnings
 import logging
 from transformers import TrainerCallback
+from transformers.trainer_callback import PrinterCallback
 import transformers
 
 transformers.logging.set_verbosity_error()
-from transformers.trainer_callback import PrinterCallback
 
 POLICY_MODEL = "pankaj0/llama-3.2-3b-asr-refiner-merged"
 JUDGE_MODEL = "pankaj0/qwen-post-refine-judge"
@@ -71,6 +71,7 @@ policy_model = FastLanguageModel.get_peft_model(
         "k_proj",
         "v_proj",
         "o_proj",
+        "gate_proj",
         "up_proj",
         "down_proj",
     ],
@@ -112,6 +113,15 @@ judge_tokenizer.padding_side = "left"
 # Fallback chat template if not baked in tokenizer config
 if getattr(judge_tokenizer, "chat_template", None) is None:
     judge_tokenizer = get_chat_template(judge_tokenizer, chat_template="chatml")
+
+import torch.nn.functional as F
+
+# Pre-compute token IDs for single digits "0" through "9" in Qwen tokenizer
+DIGIT_STRINGS = [str(i) for i in range(10)]
+DIGIT_VALUES = torch.tensor([float(i) for i in range(10)], device=JUDGE_DEVICE)
+DIGIT_TOKEN_IDS = [
+    judge_tokenizer.encode(d, add_special_tokens=False)[-1] for d in DIGIT_STRINGS
+]
 
 # Define the judge's system prompt globally to allow reuse
 judge_system_prompt = """
@@ -181,42 +191,59 @@ def _extract_text(item):
     return str(item)
 
 
-def _parse_judge_score(
-    response_text: str,
-) -> float | None:
+def _extract_continuous_judge_score(
+    gen_ids: torch.Tensor,
+    step_scores: tuple[torch.Tensor, ...],
+    sample_idx: int,
+    tokenizer,
+) -> tuple[float | None, dict, str]:
     """
-    Parses judge evaluation output into a normalized float reward [0.0, 1.0].
-    Returns None if required keys are missing, skipping sample in GRPO.
-    Returns 0.0 if faithfulness <= 0, penalizing hallucinations.
+    Finds the generated digit token for each JSON rubric key and computes
+    the continuous probability-weighted expected score from the model's logits.
     """
-    scores = {}
-    for line in response_text.splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            k_clean = k.strip().lower().strip("\"'")
-            match = re.search(r"\d+(?:\.\d+)?", v)
-            if match:
-                scores[k_clean] = float(match.group(0))
+    keys = ["faithfulness", "noise_removed", "errors_fixed", "formatting"]
+    response_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
 
-    keys = [
-        "faithfulness",
-        "noise_removed",
-        "errors_fixed",
-        "formatting",
-    ]
+    # Decode token-by-token so we can map character positions to exact generation steps
+    token_pieces = [tokenizer.decode([tid]) for tid in gen_ids]
+    full_str = "".join(token_pieces)
+
+    # Map each character index in full_str back to its generation step index
+    char_to_step = []
+    for step_idx, piece in enumerate(token_pieces):
+        char_to_step.extend([step_idx] * len(piece))
+
+    continuous_scores = {}
     for k in keys:
-        if k not in scores:
-            print(
-                f"[(func)_parse_judge_score] Incomplete keys. Skipping sample: {response_text.strip()}"
-            )
-            return None
-        if scores[k] == 0:
-            print(
-                f"[(func)_parse_judge_score] Detected 0 in metric '{k}'. Skipping sample: {response_text.strip()}"
-            )
-            return None
-    total_sum = sum(scores[k] for k in keys)
-    return float(total_sum / 36.0)
+        # Match `"key": <digit>` in the generated string
+        pattern = rf'"{k}"\s*:\s*(\d)'
+        match = re.search(pattern, full_str.lower())
+        if not match:
+            print(f"[Judge] Missing key '{k}'. Skipping: {response_text.strip()}")
+            return None, {}, response_text
+
+        # Find the character index of the captured digit and map to generation step
+        digit_char_idx = match.start(1)
+        step_idx = char_to_step[digit_char_idx]
+
+        # Extract logits at that exact generation step for this batch item
+        # step_scores[step_idx] has shape: (batch_size, vocab_size)
+        step_logits = step_scores[step_idx][sample_idx]  # shape: (vocab_size,)
+        digit_logits = step_logits[DIGIT_TOKEN_IDS].float()  # shape: (10,)
+
+        # Softmax over only the digits 0..9 to get probability distribution
+        probs = F.softmax(digit_logits, dim=-1)
+
+        # Expected continuous score: sum(d * P(d)) for d in 0..9
+        expected_val = torch.sum(probs * DIGIT_VALUES).item()
+        continuous_scores[k] = round(expected_val, 6)
+
+    # Hard penalty if faithfulness is heavily weighted toward 0 (< 0.5 expected)
+    if continuous_scores["faithfulness"] < 0.5:
+        return 0.0, continuous_scores, response_text
+
+    total_sum = sum(continuous_scores[k] for k in keys)
+    return float(total_sum / 36.0), continuous_scores, response_text
 
 
 def formatting_judge_prompts_func(prompts, completions, tokenizer):
@@ -247,8 +274,7 @@ def formatting_judge_prompts_func(prompts, completions, tokenizer):
 
 def judge_reward(completions, prompts=None, **kwargs):
     """
-    TRL GRPO Reward function using Qwen judge.
-    Returns a list of scalar float rewards, one per completion.
+    TRL GRPO Reward function using Qwen judge with continuous logit-weighted scoring.
     """
     if prompts is None:
         prompts = kwargs.get("prompts", kwargs.get("prompt", []))
@@ -282,32 +308,39 @@ def judge_reward(completions, prompts=None, **kwargs):
         outputs = judge_model.generate(
             input_ids=inputs.input_ids,
             attention_mask=inputs.attention_mask,
-            max_new_tokens=128,
+            max_new_tokens=96,
             do_sample=False,
             use_cache=True,
             pad_token_id=judge_tokenizer.pad_token_id,
+            return_dict_in_generate=True,  # <-- Required to get step logits
+            output_scores=True,            # <-- Returns tuple of logits per step
         )
 
     prompt_len = inputs.input_ids.shape[1]
-    generated_tokens = outputs[:, prompt_len:].cpu()
-    responses = judge_tokenizer.batch_decode(
-        generated_tokens,
-        skip_special_tokens=True,
-    )
+    generated_tokens = outputs.sequences[:, prompt_len:].cpu()
 
     rewards = []
-    for resp in responses:
+    detailed_metrics = []
+    for i in range(len(batch_inputs)):
         try:
-            rewards.append(_parse_judge_score(resp))
-        except Exception:
+            reward, metric_dict, resp_text = _extract_continuous_judge_score(
+                generated_tokens[i],
+                outputs.scores,
+                i,
+                judge_tokenizer,
+            )
+            rewards.append(reward)
+            detailed_metrics.append(metric_dict)
+        except Exception as e:
+            print(f"[Judge Error] {e}")
             rewards.append(None)
+            detailed_metrics.append({})
 
     # --------------- logging -------------------
     with open(LOG_FILE, "a", encoding="utf-8") as f:
-        for raw_item, completion_item, reward, policy_prompt, judge_prompt in zip(
-            raw_inputs, completions, rewards, prompts, batch_inputs
+        for raw_item, completion_item, reward, metrics, policy_prompt, judge_prompt in zip(
+            raw_inputs, completions, rewards, detailed_metrics, prompts, batch_inputs
         ):
-            # grpo_trainer pass arguments in {"role", ... , "content" : .. } format
             raw_input = _extract_text(raw_item)
             refined_output = _extract_text(completion_item)
             policy_prompt = _extract_text(policy_prompt)
@@ -316,10 +349,12 @@ def judge_reward(completions, prompts=None, **kwargs):
                 "raw_input": raw_input,
                 "refined_output": refined_output,
                 "rewards": reward,
+                "continuous_subscores": metrics,
                 "policy_prompt": policy_prompt,
                 "judge_prompt": judge_prompt,
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     return rewards
 
 
@@ -359,10 +394,10 @@ grpo_config = GRPOConfig(
     gradient_accumulation_steps=4,
     num_generations=4,
     num_train_epochs=1,
-    learning_rate=2e-5,
+    learning_rate=5e-6,
     lr_scheduler_type="cosine",
     optim="paged_adamw_8bit",
-    temperature=0.7,
+    temperature=1.0,
     bf16=False,
     fp16=True,
     seed=42,
@@ -372,8 +407,8 @@ grpo_config = GRPOConfig(
     save_strategy="steps",
     save_steps=50,
     report_to="none",
-    warmup_steps=0.1,
-    beta=0.4,
+    warmup_ratio=0.1,
+    beta=0.04,
 )
 
 # Pin trainer to single GPU (cuda:0), prevents automatic DataParallel across cuda:0 and cuda:1
