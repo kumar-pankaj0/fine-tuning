@@ -24,20 +24,25 @@ os.environ["UNSLOTH_ENABLE_LOGGING"] = "0"
 warnings.filterwarnings("ignore")
 logging.getLogger("unsloth").setLevel(logging.ERROR)
 
-LOG_FILE = ".log/grpo_traning.jsonl"
+LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
+DEVICE = f"cuda:{LOCAL_RANK}" if torch.cuda.is_available() else "cpu"
+JUDGE_DEVICE = DEVICE
+
+LOG_FILE = f".log/grpo_traning_rank_{LOCAL_RANK}.json"
+quick_view = f".log/quick_view_rank_{LOCAL_RANK}.json"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 
 class PrintKLCallback(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs and "kl" in logs:
+        if state.is_world_process_zero and logs and "kl" in logs:
             kl = logs.get("kl")
             loss = logs.get("loss")
             avg_reward = logs.get("reward")
 
             print(
                 f"[Step {state.global_step}] "
-                f"KL: {f'{kl:.4f}' if kl is not None else 'N/A'} | "
+                f"KL: {f'{kl:.8f}' if kl is not None else 'N/A'} | "
                 f"Loss: {f'{loss:.4f}' if loss is not None else 'N/A'} | "
                 f"Avg Reward: {f'{avg_reward:.4f}' if avg_reward is not None else 'N/A'}"
             )
@@ -52,13 +57,12 @@ class PrintKLCallback(TrainerCallback):
                 }
                 f.write(json.dumps(metric_data, ensure_ascii=False) + "\n")
 
-
 policy_model, policy_tokenizer = FastLanguageModel.from_pretrained(
     model_name=POLICY_MODEL,
     max_seq_length=2048,
     dtype=None,
     load_in_4bit=True,
-    device_map=({"": 0} if torch.cuda.device_count() > 1 else None),
+    device_map=({"": LOCAL_RANK} if torch.cuda.is_available() else None),
 )
 
 policy_model = FastLanguageModel.get_peft_model(
@@ -80,13 +84,6 @@ policy_model = FastLanguageModel.get_peft_model(
 policy_tokenizer = get_chat_template(
     policy_tokenizer,
     chat_template="llama-3.1",
-)
-
-# Load judge model on dedicated GPU (cuda:1) with standard Transformers
-JUDGE_DEVICE = (
-    "cuda:1"
-    if torch.cuda.device_count() > 1
-    else ("cuda:0" if torch.cuda.is_available() else "cpu")
 )
 
 judge_bnb_config = BitsAndBytesConfig(
@@ -215,7 +212,9 @@ def _extract_continuous_judge_score(
         match = re.search(pattern, full_str.lower())
 
         if not match:
-            print(f"[Judge Parse Error] Missing key '{k}'. Skipping: {response_text.strip()}")
+            print(
+                f"[Judge Parse Error] Missing key '{k}'. Skipping: {response_text.strip()}"
+            )
             return None, {}, response_text
 
         digit_char_idx = match.start(1)
@@ -306,7 +305,7 @@ def judge_reward(completions, prompts=None, **kwargs):
             use_cache=True,
             pad_token_id=judge_tokenizer.pad_token_id,
             return_dict_in_generate=True,  # <-- Required to get step logits
-            output_scores=True,            # <-- Returns tuple of logits per step
+            output_scores=True,  # <-- Returns tuple of logits per step
         )
 
     prompt_len = inputs.input_ids.shape[1]
@@ -330,8 +329,17 @@ def judge_reward(completions, prompts=None, **kwargs):
             detailed_metrics.append({})
 
     # --------------- logging -------------------
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        for raw_item, completion_item, reward, metrics, policy_prompt, judge_prompt in zip(
+    with open(LOG_FILE, "a", encoding="utf-8") as f, open(
+        quick_view, "a", encoding="utf-8"
+    ) as f_quick:
+        for (
+            raw_item,
+            completion_item,
+            reward,
+            metrics,
+            policy_prompt,
+            judge_prompt,
+        ) in zip(
             raw_inputs, completions, rewards, detailed_metrics, prompts, batch_inputs
         ):
             raw_input = _extract_text(raw_item)
@@ -347,6 +355,16 @@ def judge_reward(completions, prompts=None, **kwargs):
                 "judge_prompt": judge_prompt,
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+            quick_record = {
+                "raw_input": raw_input,
+                "refined_output": refined_output,
+                "total_reward": reward,
+                "judge_scores": metrics,
+            }
+            f_quick.write(
+                json.dumps(quick_record, ensure_ascii=False, indent=2) + "\n\n"
+            )
 
     return rewards
 
@@ -385,7 +403,7 @@ grpo_config = GRPOConfig(
     output_dir="./output/grpo_traning",
     per_device_train_batch_size=1,
     gradient_accumulation_steps=4,
-    num_generations=4,
+    num_generations=8,
     num_train_epochs=1,
     learning_rate=5e-6,
     lr_scheduler_type="cosine",
@@ -403,9 +421,6 @@ grpo_config = GRPOConfig(
     warmup_ratio=0.1,
     beta=0.04,
 )
-
-# Pin trainer to single GPU (cuda:0), prevents automatic DataParallel across cuda:0 and cuda:1
-grpo_config._n_gpu = 1
 
 grpo_trainer = GRPOTrainer(
     model=policy_model,
