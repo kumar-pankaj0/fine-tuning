@@ -57,6 +57,7 @@ class PrintKLCallback(TrainerCallback):
                 }
                 f.write(json.dumps(metric_data, ensure_ascii=False) + "\n")
 
+
 policy_model, policy_tokenizer = FastLanguageModel.from_pretrained(
     model_name=POLICY_MODEL,
     max_seq_length=2048,
@@ -329,9 +330,10 @@ def judge_reward(completions, prompts=None, **kwargs):
             detailed_metrics.append({})
 
     # --------------- logging -------------------
-    with open(LOG_FILE, "a", encoding="utf-8") as f, open(
-        quick_view, "a", encoding="utf-8"
-    ) as f_quick:
+    with (
+        open(LOG_FILE, "a", encoding="utf-8") as f,
+        open(quick_view, "a", encoding="utf-8") as f_quick,
+    ):
         for (
             raw_item,
             completion_item,

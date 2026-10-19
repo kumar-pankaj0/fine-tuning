@@ -6,3 +6,4 @@ output/
 *.pt
 *.safetensors
 *.bin
+.log/
