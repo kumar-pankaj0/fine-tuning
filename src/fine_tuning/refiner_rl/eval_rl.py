@@ -1,5 +1,18 @@
 import os
+import logging
+import warnings
 import torch
+
+# Suppress all noisy warnings and verbose logs from Unsloth, Transformers, and PyTorch
+os.environ["UNSLOTH_ENABLE_LOGGING"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+warnings.filterwarnings("ignore")
+logging.getLogger("unsloth").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+
+import transformers
+transformers.logging.set_verbosity_error()
+
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template
 from datasets import load_dataset
