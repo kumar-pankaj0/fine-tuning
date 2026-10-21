@@ -11,6 +11,7 @@ logging.getLogger("unsloth").setLevel(logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
 import transformers
+
 transformers.logging.set_verbosity_error()
 
 from unsloth import FastLanguageModel
