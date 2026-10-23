@@ -52,3 +52,9 @@ AUGMENTATION_SCHEMA = {
     "required": ["augmented_noise_inputs"],
     "additionalProperties": False,
 }
+
+# Explicit stage-aligned aliases
+STAGE1_PAIR_GENERATION_SCHEMA = SEED_SCHEMA
+STAGE2_QUALITY_JUDGE_SCHEMA = JUDGE_SCHEMA
+STAGE3_NOISE_AUGMENTATION_SCHEMA = AUGMENTATION_SCHEMA
+

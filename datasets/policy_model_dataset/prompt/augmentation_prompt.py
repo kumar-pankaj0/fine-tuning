@@ -24,6 +24,7 @@ def build_augmentation_prompt() -> str:
         "</task>\n\n"
         "<rules>\n"
         "- Simulate realistic ASR noise: fillers, false starts, repetition, cut words, phonetic confusion, homophones, and missing word endings.\n"
+        "- Output a single continuous stream of spoken text. Never include newline characters (\\n) or markdown list markers (- , 1.).\n"
         "- Remove punctuation. Use lowercase or inconsistent capitalization.\n"
         "- Keep the core meaning.\n"
         '- Keep the word count between 0.4x and 1.3x of "refined_text".\n'

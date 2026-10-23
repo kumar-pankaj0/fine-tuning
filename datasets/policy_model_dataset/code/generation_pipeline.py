@@ -114,6 +114,8 @@ def validate_noise_input(noise_input: str, refined_text: str) -> bool:
     """
     if not noise_input or not refined_text:
         return False
+    if "\n" in noise_input:
+        return False
     if noise_input.strip().lower() == refined_text.strip().lower():
         return False
 
