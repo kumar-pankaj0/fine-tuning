@@ -9,6 +9,10 @@ from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset
 from transformers.trainer_callback import PrinterCallback, TrainerCallback
 import json
+import os
+import torch
+
+max_seq_length = 2048
 
 model_name = "llama-3.1-3b"
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -69,23 +73,30 @@ def format_dataset(path: str = "./datasets/policy_sft_asr.json"):
 training_dataset = format_dataset()
 
 training_args = SFTConfig(
+    output_dir="./outputs",
     num_train_epochs=3,
     per_device_train_batch_size=8,
     gradient_accumulation_steps=2,
-    report_to="none",
     learning_rate=2e-4,
     optim="adamw_8bit",
     lr_scheduler_type="cosine",
     warmup_ratio=0.1,
     dataset_text_field="text",
+    max_seq_length=max_seq_length,
+    logging_steps=10,
+    report_to="none",
+    fp16=not torch.cuda.is_bf16_supported(),
+    bf16=torch.cuda.is_bf16_supported(),
+    ddp_find_unused_parameters=False,
 )
 
 
 class CustomPrinter(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
-        print(
-            f" steps : {state.global_step} | loss : {logs.get('loss')} | lr : {logs.get('learning_rate')}"
-        )
+        if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+            print(
+                f" steps : {state.global_step} | loss : {logs.get('loss')} | lr : {logs.get('learning_rate')}"
+            )
 
 
 trainer = SFTTrainer(
