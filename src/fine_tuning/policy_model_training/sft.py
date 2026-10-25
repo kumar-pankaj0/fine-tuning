@@ -67,7 +67,7 @@ def _process_batch_examples(batch):
     return {"text": samples}
 
 
-def format_dataset(path: str = "./datasets/policy_sft_asr.json"):
+def format_dataset(path: str = "./datasets/policy_model_dataset/combined_data.json"):
     datasets = load_dataset("json", data_files=path)
     datasets = datasets.map(_process_batch_examples, batched=True)
     split = datasets.train_test_split(test_size=0.1, seed=42)
