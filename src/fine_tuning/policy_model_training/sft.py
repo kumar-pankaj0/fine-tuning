@@ -2,7 +2,11 @@ from unsloth import FastLanguageModel
 from unsloth.chat_templates import train_on_responses_only
 from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset
-from transformers.trainer_callback import PrinterCallback, TrainerCallback
+from transformers.trainer_callback import (
+    PrinterCallback,
+    TrainerCallback,
+    EarlyStoppingCallback,
+)
 import json
 import os
 import torch
@@ -66,14 +70,22 @@ def _process_batch_examples(batch):
 def format_dataset(path: str = "./datasets/policy_sft_asr.json"):
     datasets = load_dataset("json", data_files=path)
     datasets = datasets.map(_process_batch_examples, batched=True)
-    return datasets
+    split = datasets.train_test_split(test_size=0.1, seed=42)
+    return split["train"], split["test"]
 
 
-training_dataset = format_dataset()
+train_dataset, test_dataset = format_dataset()
 
 training_args = SFTConfig(
+    load_best_model_at_end=True,
+    metric_for_best_model="eval_loss",
+    greater_is_better=False,
     output_dir="./outputs",
-    num_train_epochs=3,
+    eval_strategy="steps",
+    eval_steps=50,
+    save_strategy="steps",
+    save_steps=50,
+    num_train_epochs=2,
     per_device_train_batch_size=8,
     gradient_accumulation_steps=4,
     learning_rate=2e-4,
@@ -102,8 +114,9 @@ trainer = SFTTrainer(
     model=model,
     tokenizer=tokenizer,
     args=training_args,
-    train_dataset=training_dataset["train"],
-    callbacks=[CustomPrinter()],
+    train_dataset=train_dataset,
+    eval_dataset=test_dataset,
+    callbacks=[CustomPrinter(), EarlyStoppingCallback(early_stopping_patience=3)],
 )
 trainer = train_on_responses_only(
     trainer,
