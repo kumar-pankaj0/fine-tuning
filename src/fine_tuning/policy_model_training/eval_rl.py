@@ -125,7 +125,9 @@ def evaluate(tokenizer, model, num_samples: int = 10, model_label: str = "Model"
     total_cer = 0.0
 
     print(f"\n{'=' * 70}")
-    print(f"🚀 Starting Evaluation Pipeline [{model_label}] ({len(eval_data)} samples on {device})")
+    print(
+        f"🚀 Starting Evaluation Pipeline [{model_label}] ({len(eval_data)} samples on {device})"
+    )
     print(f"{'=' * 70}")
 
     for idx, input_sample in enumerate(eval_data):
@@ -174,7 +176,9 @@ def evaluate(tokenizer, model, num_samples: int = 10, model_label: str = "Model"
         print("-" * 70)
 
     # Compute Batch BERTScore in one vectorized pass (much faster & GPU efficient)
-    print(f"\n⏳ Computing BERTScore across all samples for {model_label} on {device}...")
+    print(
+        f"\n⏳ Computing BERTScore across all samples for {model_label} on {device}..."
+    )
     p_tensor, r_tensor, f1_tensor = bert_score(
         predictions,
         references,
@@ -246,13 +250,20 @@ def batch_evaluate(tokenizer, model, batch_size: int = 8, model_label: str = "Mo
             ).strip()
             predictions.append(extract_refined_output(raw))
 
-        print(f"  [{model_label}] Progress: {min(i + batch_size, len(prompts))}/{len(prompts)}", end="\r")
+        print(
+            f"  [{model_label}] Progress: {min(i + batch_size, len(prompts))}/{len(prompts)}",
+            end="\r",
+        )
 
     print()  # Advance to next line after progress output
 
     # --- Metrics: all computed outside the loop ---
-    total_wer = sum(wer(r, p) for r, p in zip(references, predictions)) / len(references)
-    total_cer = sum(cer(r, p) for r, p in zip(references, predictions)) / len(references)
+    total_wer = sum(wer(r, p) for r, p in zip(references, predictions)) / len(
+        references
+    )
+    total_cer = sum(cer(r, p) for r, p in zip(references, predictions)) / len(
+        references
+    )
 
     print(f"⏳ [{model_label}] Computing BERTScore on {device}...")
     p_t, r_t, f1_t = bert_score(
@@ -309,7 +320,10 @@ def print_comparison_report(base_metrics, ft_metrics):
 # Helper worker functions (defined at module level for spawn / thread pickling)
 # ==============================================================================
 
-def _spawn_worker(model_name: str, queue, device_id: int, model_label: str, batch_size: int = 8):
+
+def _spawn_worker(
+    model_name: str, queue, device_id: int, model_label: str, batch_size: int = 8
+):
     """Worker process for torch.multiprocessing parallel evaluation."""
     try:
         torch.cuda.set_device(device_id)
@@ -330,7 +344,9 @@ def _spawn_worker(model_name: str, queue, device_id: int, model_label: str, batc
         queue.put((model_label, None, str(e)))
 
 
-def _thread_worker(model_name: str, device_id: int, model_label: str, batch_size: int = 8):
+def _thread_worker(
+    model_name: str, device_id: int, model_label: str, batch_size: int = 8
+):
     """Worker task for ThreadPoolExecutor parallel evaluation."""
     device = f"cuda:{device_id}"
     with torch.cuda.device(device_id):
@@ -351,7 +367,15 @@ def _thread_worker(model_name: str, device_id: int, model_label: str, batch_size
 if __name__ == "__main__":
     base_model_name = "unsloth/Llama-3.2-3B-Instruct"
     fine_tuned_model_name = "pankaj0/llama-3.2-3b-asr-sft"
-
+    model, tokenizer = load_model(base_model_name)
+    avg_wer, avg_cer, avg_precision, avg_recall, avg_f1 = evaluate(
+        tokenizer, model, num_samples=10
+    )
+    print("WER : {avg_wer}")
+    print("CER : {avg_cer}")
+    print("PRECISION : {avg_precisione}")
+    print("RECALL : {avg_recall}")
+    print("F1 : {avg_f1}")
     """
     # ==============================================================================
     # OPTION 1: ThreadPoolExecutor (Multi-threading in single process)
@@ -422,7 +446,6 @@ if __name__ == "__main__":
     fine_tuned_process.join()
 
     print_comparison_report(results["Baseline"], results["Fine-Tuned"])
-    """
 
     # ==============================================================================
     # OPTION 3 (ACTIVE): torchrun Distributed Parallelization (torch.distributed)
@@ -442,8 +465,6 @@ if __name__ == "__main__":
         print("\n⚠️  [torchrun Parallel Mode Active]")
         print("To run both models simultaneously across 2 GPUs, launch with:")
         print("   torchrun --nproc_per_node=2 eval_rl.py\n")
-        print("Alternatively, uncomment OPTION 2 (torch.multiprocessing) above to run via:")
-        print("   python eval_rl.py\n")
         sys_exit = True
     else:
         sys_exit = False
@@ -465,7 +486,9 @@ if __name__ == "__main__":
             )
         else:
             print(f"\n🎯 [Rank {local_rank}] Loading Fine-Tuned Model on {device}...")
-            model, tokenizer = load_model(model_name=fine_tuned_model_name, device=device)
+            model, tokenizer = load_model(
+                model_name=fine_tuned_model_name, device=device
+            )
             metrics = batch_evaluate(
                 tokenizer=tokenizer,
                 model=model,
@@ -486,4 +509,4 @@ if __name__ == "__main__":
             # index 1 -> Fine-Tuned metrics (GPU 1)
             print_comparison_report(all_gathered_metrics[0], all_gathered_metrics[1])
 
-        distributed.destroy_process_group()
+        distributed.destroy_process_group()"""
