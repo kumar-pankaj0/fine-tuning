@@ -1,8 +1,3 @@
-"""
-depency for this file
-- git clone https://kumer-pankaj0/datasets.git
-"""
-
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import train_on_responses_only
 from trl import SFTTrainer, SFTConfig
@@ -14,11 +9,15 @@ import torch
 
 max_seq_length = 2048
 
-model_name = "llama-3.1-3b"
+# Map the process strictly to its allocated local GPU
+local_rank = int(os.environ.get("LOCAL_RANK", 0))
+device_map = {"": local_rank}
+
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name,
+    model_name="unsloth/Llama-3.2-3B-Instruct",
+    max_seq_length=max_seq_length,
     load_in_4bit=True,
-    dtype=None,
+    device_map=device_map,
 )
 
 model = FastLanguageModel.get_peft_model(
@@ -76,7 +75,7 @@ training_args = SFTConfig(
     output_dir="./outputs",
     num_train_epochs=3,
     per_device_train_batch_size=8,
-    gradient_accumulation_steps=2,
+    gradient_accumulation_steps=4,
     learning_rate=2e-4,
     optim="adamw_8bit",
     lr_scheduler_type="cosine",
@@ -113,4 +112,16 @@ trainer = train_on_responses_only(
 )
 
 trainer.remove_callback(PrinterCallback)
-trainer.train()
+
+if __name__ == "__main__":
+    HF_TOKEN = os.environ.get("HF_TOKEN")
+    HF_REPO = "pankaj0/llama-3.2-3b-asr-sft"
+    trainer.train()
+
+    print(f"Pushing trained model to Hugging Face Hub: {HF_REPO}...")
+
+    # Push the lightweight LoRA adapter (~50MB)
+    model.push_to_hub(HF_REPO, token=HF_TOKEN)
+    tokenizer.push_to_hub(HF_REPO, token=HF_TOKEN)
+
+    print("[DONE]")
