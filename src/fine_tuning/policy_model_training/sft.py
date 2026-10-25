@@ -104,10 +104,15 @@ training_args = SFTConfig(
 
 class CustomPrinter(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-            print(
-                f" steps : {state.global_step} | loss : {logs.get('loss')} | lr : {logs.get('learning_rate')}"
-            )
+        if int(os.environ.get("LOCAL_RANK", 0)) == 0 and logs:
+            if "loss" in logs:
+                print(
+                    f" steps : {state.global_step} | loss : {logs.get('loss')} | lr : {logs.get('learning_rate')}"
+                )
+            if "eval_loss" in logs:
+                print(
+                    f" [EVAL] steps : {state.global_step} | eval_loss : {logs.get('eval_loss')}"
+                )
 
 
 trainer = SFTTrainer(
