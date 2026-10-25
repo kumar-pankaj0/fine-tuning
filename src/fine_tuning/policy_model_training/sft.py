@@ -67,7 +67,21 @@ def _process_batch_examples(batch):
     return {"text": samples}
 
 
-def format_dataset(path: str = "./datasets/policy_model_dataset/combined_data.json"):
+def format_dataset(path: str = None):
+    if path is None:
+        candidates = [
+            os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "../../../datasets/policy_model_dataset/combined_dataset.jsonl",
+                )
+            ),
+            "./fine-tuning/datasets/policy_model_dataset/combined_dataset.jsonl",
+            "./datasets/policy_model_dataset/combined_dataset.jsonl",
+            "/kaggle/working/fine-tuning/datasets/policy_model_dataset/combined_dataset.jsonl",
+        ]
+        path = next((c for c in candidates if os.path.exists(c)), candidates[0])
+
     datasets = load_dataset("json", data_files=path)
     datasets = datasets.map(_process_batch_examples, batched=True)
     split = datasets.train_test_split(test_size=0.1, seed=42)
