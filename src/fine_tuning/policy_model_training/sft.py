@@ -82,7 +82,7 @@ def format_dataset(path: str = None):
         ]
         path = next((c for c in candidates if os.path.exists(c)), candidates[0])
 
-    datasets = load_dataset("json", data_files=path)
+    datasets = load_dataset("json", data_files=path, split="train")
     datasets = datasets.map(_process_batch_examples, batched=True)
     split = datasets.train_test_split(test_size=0.1, seed=42)
     return split["train"], split["test"]
