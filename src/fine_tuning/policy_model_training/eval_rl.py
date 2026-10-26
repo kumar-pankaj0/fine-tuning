@@ -124,7 +124,9 @@ def evaluate(tokenizer, model, num_samples: int = 10, model_label: str = "Model"
     total_cer = 0.0
 
     print(f"\n{'=' * 70}")
-    print(f"🚀 Starting Evaluation Pipeline [{model_label}] ({len(eval_data)} samples on {device})")
+    print(
+        f"🚀 Starting Evaluation Pipeline [{model_label}] ({len(eval_data)} samples on {device})"
+    )
     print(f"{'=' * 70}")
 
     for idx, input_sample in enumerate(eval_data):
@@ -173,7 +175,9 @@ def evaluate(tokenizer, model, num_samples: int = 10, model_label: str = "Model"
         print("-" * 70)
 
     # Compute Batch BERTScore in one vectorized pass (much faster & GPU efficient)
-    print(f"\n⏳ Computing BERTScore across all samples for {model_label} on {device}...")
+    print(
+        f"\n⏳ Computing BERTScore across all samples for {model_label} on {device}..."
+    )
     p_tensor, r_tensor, f1_tensor = bert_score(
         list(predictions),
         list(references),
@@ -245,13 +249,20 @@ def batch_evaluate(tokenizer, model, batch_size: int = 8, model_label: str = "Mo
             ).strip()
             predictions.append(extract_refined_output(raw))
 
-        print(f"  [{model_label}] Progress: {min(i + batch_size, len(prompts))}/{len(prompts)}", end="\r")
+        print(
+            f"  [{model_label}] Progress: {min(i + batch_size, len(prompts))}/{len(prompts)}",
+            end="\r",
+        )
 
     print()  # Advance to next line after progress output
 
     # --- Metrics: all computed outside the loop ---
-    total_wer = sum(wer(r, p) for r, p in zip(references, predictions)) / len(references)
-    total_cer = sum(cer(r, p) for r, p in zip(references, predictions)) / len(references)
+    total_wer = sum(wer(r, p) for r, p in zip(references, predictions)) / len(
+        references
+    )
+    total_cer = sum(cer(r, p) for r, p in zip(references, predictions)) / len(
+        references
+    )
 
     print(f"⏳ [{model_label}] Computing BERTScore on {device}...")
     p_t, r_t, f1_t = bert_score(
@@ -308,7 +319,10 @@ def print_comparison_report(base_metrics, ft_metrics):
 # Helper worker functions (defined at module level for spawn / thread pickling)
 # ==============================================================================
 
-def _spawn_worker(model_name: str, queue, device_id: int, model_label: str, batch_size: int = 8):
+
+def _spawn_worker(
+    model_name: str, queue, device_id: int, model_label: str, batch_size: int = 8
+):
     """Worker process for torch.multiprocessing parallel evaluation."""
     try:
         torch.cuda.set_device(device_id)
@@ -329,7 +343,9 @@ def _spawn_worker(model_name: str, queue, device_id: int, model_label: str, batc
         queue.put((model_label, None, str(e)))
 
 
-def _thread_worker(model_name: str, device_id: int, model_label: str, batch_size: int = 8):
+def _thread_worker(
+    model_name: str, device_id: int, model_label: str, batch_size: int = 8
+):
     """Worker task for ThreadPoolExecutor parallel evaluation."""
     device = f"cuda:{device_id}"
     with torch.cuda.device(device_id):
@@ -348,151 +364,211 @@ def _thread_worker(model_name: str, device_id: int, model_label: str, batch_size
 
 
 if __name__ == "__main__":
-    base_model_name = "unsloth/Llama-3.2-3B-Instruct"
-    fine_tuned_model_name = "pankaj0/llama-3.2-3b-asr-sft"
+    import argparse
+
+    parse = argparse.ArgumentParser(
+        description="Evaluate BaseModel & Fine-Tuned ASR Models"
+    )
+    parse.add_argument(
+        "--base-model",
+        type=str,
+        default=None,
+        help="BaseModel path or Huggingface Face model repo Path",
+    )
+    parse.add_argument(
+        "--fine-tuned-model",
+        type=str,
+        default=None,
+        help="Fine-Tuned model Path or Huggingface Face repo where stored.",
+    )
+
+    parse.add_argument(
+        "--num-samples",
+        type=int,
+        default=10,
+        help="Number of samples to display in inspect mode",
+    )
+    parse.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Batch size for batch evaluation",
+    )
+
+    args = parse.parse_args()
+    base_model_name = args.base_model
+    fine_tuned_model_name = args.fine_tuned_model
 
     # ==============================================================================
-    # Quick 10-Sample Debug / Inspection Call (Kept alongside as requested)
+    # Quick Sample Debug / Inspection Call (Kept alongside as requested)
     # ==============================================================================
     # If run standalone via `python eval_rl.py`, this executes sample-by-sample inspect:
-    if "LOCAL_RANK" not in os.environ:
-        print("\n🔍 Running 10-sample inspection mode...")
-        model, tokenizer = load_model(base_model_name)
-        avg_wer, avg_cer, avg_precision, avg_recall, avg_f1 = evaluate(
-            tokenizer, model, num_samples=10, model_label="Baseline"
-        )
-        print(f"WER : {avg_wer:.4f}")
-        print(f"CER : {avg_cer:.4f}")
-        print(f"PRECISION : {avg_precision:.4f}")
-        print(f"RECALL : {avg_recall:.4f}")
-        print(f"F1 : {avg_f1:.4f}")
+    target_models = []
+    if base_model_name:
+        target_models.append((base_model_name, "Baseline"))
+    if fine_tuned_model_name:
+        target_models.append((fine_tuned_model_name, "Fine-Tuned"))
+
+    if len(target_models) == 1:
+        print(f"\n🔍 Running {args.num_samples}-sample inspection mode...")
+        for model_name, label in target_models:
+            if not model_name:
+                continue
+            print(f"\n--- Inspecting {label} [{model_name}] ---")
+            model, tokenizer = load_model(model_name)
+            avg_wer, avg_cer, avg_precision, avg_recall, avg_f1 = evaluate(
+                tokenizer, model, num_samples=args.num_samples, model_label=label
+            )
+            print(
+                f"[{label}] WER : {avg_wer:.4f} | CER : {avg_cer:.4f} | F1 : {avg_f1:.4f}"
+            )
+            del model
+            del tokenizer
+            torch.cuda.empty_cache()
+
         print("\n💡 To run full 2-GPU parallel evaluation with batch_size=64, run:")
-        print("   torchrun --nproc_per_node=2 eval_rl.py\n")
-        sys_exit = True
-    else:
-        sys_exit = False
-
-    """
-    # ==============================================================================
-    # OPTION 1: ThreadPoolExecutor (Multi-threading in single process)
-    # ------------------------------------------------------------------------------
-    # Concurrent kernel dispatch using Python threads. Results return directly in memory.
-    # Note: Slight GIL contention occurs during CPU tokenization / string operations.
-    # ==============================================================================
-    from concurrent.futures import ThreadPoolExecutor
-
-    print("⚡ Starting Parallel Evaluation via ThreadPoolExecutor...")
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        base_future = executor.submit(
-            _thread_worker,
-            model_name=base_model_name,
-            device_id=0,
-            model_label="Baseline",
-            batch_size=8,
-        )
-        ft_future = executor.submit(
-            _thread_worker,
-            model_name=fine_tuned_model_name,
-            device_id=1,
-            model_label="Fine-Tuned",
-            batch_size=8,
+        print(
+            f"   torchrun --nproc_per_node=2 eval_rl.py --base-model {base_model_name or '<base>'} --fine-tuned-model <ft>\n"
         )
 
-        base_metrics = base_future.result()
-        ft_metrics = ft_future.result()
+    elif len(target_models) == 2:
+        """
+        # ==============================================================================
+        # OPTION 1: ThreadPoolExecutor (Multi-threading in single process)
+        # ------------------------------------------------------------------------------
+        # Concurrent kernel dispatch using Python threads. Results return directly in memory.
+        # Note: Slight GIL contention occurs during CPU tokenization / string operations.
+        # ==============================================================================
+        from concurrent.futures import ThreadPoolExecutor
 
-    print_comparison_report(base_metrics, ft_metrics)
-    """
-
-    """
-    # ==============================================================================
-    # OPTION 2: torch.multiprocessing (Process Isolation with 'spawn' method)
-    # ------------------------------------------------------------------------------
-    # Pure Python multiprocessing without the GIL. Each process owns its own CUDA context.
-    # Completely avoids CUDA context conflicts and delivers 100% full parallel throughput.
-    # Run directly: python eval_rl.py
-    # ==============================================================================
-    from torch import multiprocessing
-
-    multiprocessing.set_start_method("spawn", force=True)
-    result_queue = multiprocessing.Queue()
-
-    print("⚡ Starting Parallel Evaluation via torch.multiprocessing...")
-    base_process = multiprocessing.Process(
-        target=_spawn_worker,
-        args=(base_model_name, result_queue, 0, "Baseline", 8),
-    )
-    fine_tuned_process = multiprocessing.Process(
-        target=_spawn_worker,
-        args=(fine_tuned_model_name, result_queue, 1, "Fine-Tuned", 8),
-    )
-
-    base_process.start()
-    fine_tuned_process.start()
-
-    # Collect metrics from both worker processes
-    results = {}
-    for _ in range(2):
-        process_model_label, metrics, error = result_queue.get()
-        if error is not None:
-            raise RuntimeError(f"Error in {process_model_label} process: {error}")
-        results[process_model_label] = metrics
-
-    base_process.join()
-    fine_tuned_process.join()
-
-    print_comparison_report(results["Baseline"], results["Fine-Tuned"])
-    """
-
-    # ==============================================================================
-    # OPTION 3 (ACTIVE): torchrun Distributed Parallelization (torch.distributed)
-    # ------------------------------------------------------------------------------
-    # Production / MLOps standard using NCCL backend.
-    # Launch with:
-    #     torchrun --nproc_per_node=2 eval_rl.py
-    #
-    # Rank 0 is pinned to GPU 0 (Baseline)
-    # Rank 1 is pinned to GPU 1 (Fine-Tuned)
-    # Metrics are synchronized across ranks using all_gather_object.
-    # ==============================================================================
-    if not sys_exit:
-        from torch import distributed
-
-        distributed.init_process_group("nccl")
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(local_rank)
-        device = f"cuda:{local_rank}"
-
-        if local_rank == 0:
-            print(f"\n🔍 [Rank {local_rank}] Loading Baseline Model on {device}...")
-            model, tokenizer = load_model(model_name=base_model_name, device=device)
-            metrics = batch_evaluate(
-                tokenizer=tokenizer,
-                model=model,
-                batch_size=64,
+        print("⚡ Starting Parallel Evaluation via ThreadPoolExecutor...")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            base_future = executor.submit(
+                _thread_worker,
+                model_name=base_model_name,
+                device_id=0,
                 model_label="Baseline",
+                batch_size=8,
+            )
+            ft_future = executor.submit(
+                _thread_worker,
+                model_name=fine_tuned_model_name,
+                device_id=1,
+                model_label="Fine-Tuned",
+                batch_size=8,
+            )
+
+            base_metrics = base_future.result()
+            ft_metrics = ft_future.result()
+
+        print_comparison_report(base_metrics, ft_metrics)
+        """
+
+        """
+        # ==============================================================================
+        # OPTION 2: torch.multiprocessing (Process Isolation with 'spawn' method)
+        # ------------------------------------------------------------------------------
+        # Pure Python multiprocessing without the GIL. Each process owns its own CUDA context.
+        # Completely avoids CUDA context conflicts and delivers 100% full parallel throughput.
+        # Run directly: python eval_rl.py
+        # ==============================================================================
+        from torch import multiprocessing
+
+        multiprocessing.set_start_method("spawn", force=True)
+        result_queue = multiprocessing.Queue()
+
+        print("⚡ Starting Parallel Evaluation via torch.multiprocessing...")
+        base_process = multiprocessing.Process(
+            target=_spawn_worker,
+            args=(base_model_name, result_queue, 0, "Baseline", 8),
+        )
+        fine_tuned_process = multiprocessing.Process(
+            target=_spawn_worker,
+            args=(fine_tuned_model_name, result_queue, 1, "Fine-Tuned", 8),
+        )
+
+        base_process.start()
+        fine_tuned_process.start()
+
+        # Collect metrics from both worker processes
+        results = {}
+        for _ in range(2):
+            process_model_label, metrics, error = result_queue.get()
+            if error is not None:
+                raise RuntimeError(f"Error in {process_model_label} process: {error}")
+            results[process_model_label] = metrics
+
+        base_process.join()
+        fine_tuned_process.join()
+
+        print_comparison_report(results["Baseline"], results["Fine-Tuned"])
+        """
+
+        # ==============================================================================
+        # OPTION 3 (ACTIVE): torchrun Distributed Parallelization (torch.distributed)
+        # ------------------------------------------------------------------------------
+        # Production / MLOps standard using NCCL backend.
+        # Launch with:
+        #     torchrun --nproc_per_node=2 eval_rl.py
+        #
+        # Rank 0 is pinned to GPU 0 (Baseline)
+        # Rank 1 is pinned to GPU 1 (Fine-Tuned)
+        # Metrics are synchronized across ranks using all_gather_object.
+        # ==============================================================================
+        if "LOCAL_RANK" not in os.environ:
+            print(
+                "\n⚡ Both models specified! For 2-GPU parallel batch evaluation, launch with torchrun:"
+            )
+            print(
+                f"   torchrun --nproc_per_node=2 eval_rl.py --base-model {args.base_model} --fine-tuned-model {args.fine_tuned_model} --batch-size {args.batch_size}\n"
             )
         else:
-            print(f"\n🎯 [Rank {local_rank}] Loading Fine-Tuned Model on {device}...")
-            model, tokenizer = load_model(model_name=fine_tuned_model_name, device=device)
-            metrics = batch_evaluate(
-                tokenizer=tokenizer,
-                model=model,
-                batch_size=64,
-                model_label="Fine-Tuned",
-            )
+            from torch import distributed
 
-        # Free GPU memory after evaluation
-        del model
-        del tokenizer
-        torch.cuda.empty_cache()
+            distributed.init_process_group("nccl")
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            torch.cuda.set_device(local_rank)
+            device = f"cuda:{local_rank}"
 
-        all_gathered_metrics = [None, None]
-        distributed.all_gather_object(all_gathered_metrics, metrics)
+            if local_rank == 0:
+                print(f"\n🔍 [Rank {local_rank}] Loading Baseline Model on {device}...")
+                model, tokenizer = load_model(model_name=args.base_model, device=device)
+                metrics = batch_evaluate(
+                    tokenizer=tokenizer,
+                    model=model,
+                    batch_size=args.batch_size,
+                    model_label="Baseline",
+                )
+            else:
+                print(f"\n🎯 [Rank {local_rank}] Loading Fine-Tuned Model on {device}...")
+                model, tokenizer = load_model(
+                    model_name=args.fine_tuned_model, device=device
+                )
+                metrics = batch_evaluate(
+                    tokenizer=tokenizer,
+                    model=model,
+                    batch_size=args.batch_size,
+                    model_label="Fine-Tuned",
+                )
 
-        if local_rank == 0:
-            # index 0 -> Baseline metrics (GPU 0)
-            # index 1 -> Fine-Tuned metrics (GPU 1)
-            print_comparison_report(all_gathered_metrics[0], all_gathered_metrics[1])
+            # Free GPU memory after evaluation
+            del model
+            del tokenizer
+            torch.cuda.empty_cache()
 
-        distributed.destroy_process_group()
+            all_gathered_metrics = [None, None]
+            distributed.all_gather_object(all_gathered_metrics, metrics)
+
+            if local_rank == 0:
+                # index 0 -> Baseline metrics (GPU 0)
+                # index 1 -> Fine-Tuned metrics (GPU 1)
+                print_comparison_report(all_gathered_metrics[0], all_gathered_metrics[1])
+
+            distributed.destroy_process_group()
+    else:
+        print("\n⚠️ No model specified! Please provide at least one model:")
+        print("   • Inspect 1 model:  python eval_rl.py --base-model <path_or_repo>")
+        print(
+            "   • Batch 2 models:   torchrun --nproc_per_node=2 eval_rl.py --base-model <base> --fine-tuned-model <ft>\n"
+        )
+        parse.print_help()
