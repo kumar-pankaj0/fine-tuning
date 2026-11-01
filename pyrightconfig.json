@@ -3,9 +3,12 @@
   "venv": ".venv",
   "pythonVersion": "3.14",
   "typeCheckingMode": "basic",
+  "extraPaths": [
+    "/data/data/com.termux/files/home/torchaudio_src/src"
+  ],
   "analysis": {
     "indexing": false,
     "diagnosticMode": "openFilesOnly",
-    "useLibraryCodeForTypes": false
+    "useLibraryCodeForTypes": true
   }
 }
