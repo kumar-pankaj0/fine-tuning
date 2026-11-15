@@ -81,17 +81,20 @@ def _format_batch_samples(batch, tokenizer):
 
 def format_dataset(tokenizer, dataset_path=None):
     if dataset_path is None:
-        for candidate in [
-            "./datasets/policy_model_dataset/sft_eval.json",
-            "../../../datasets/policy_model_dataset/sft_eval.json",
-            ".log/datasets/policy_model_dataset/sft_eval.json",
-            "/kaggle/working/datasets/policy_model_dataset/sft_eval.json",
-        ]:
-            if os.path.exists(candidate):
-                dataset_path = candidate
-                break
-        if dataset_path is None:
-            dataset_path = "./datasets/policy_model_dataset/sft_eval.json"
+        candidates = [
+            os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "../../../datasets/policy_model_dataset/data/sft_eval.json",
+                )
+            ),
+            "./fine-tuning/datasets/policy_model_dataset/data/sft_eval.json",
+            "./datasets/policy_model_dataset/data/sft_eval.json",
+            "/kaggle/working/fine-tuning/datasets/policy_model_dataset/data/sft_eval.json",
+            "/kaggle/working/datasets/policy_model_dataset/data/sft_eval.json",
+            "./data/sft_eval.json",
+        ]
+        dataset_path = next((c for c in candidates if os.path.exists(c)), candidates[0])
 
     dataset = load_dataset("json", data_files=dataset_path, split="train")
     formated_dataset = dataset.map(
@@ -112,9 +115,15 @@ def extract_refined_output(generated_text: str) -> str:
     return generated_text.strip()
 
 
-def evaluate(tokenizer, model, num_samples: int = 10, model_label: str = "Model"):
+def evaluate(
+    tokenizer,
+    model,
+    num_samples: int = 10,
+    model_label: str = "Model",
+    dataset_path: str = None,
+):
     """Sequential sample-by-sample evaluation pipeline (ideal for quick debugging)."""
-    eval_data = format_dataset(tokenizer=tokenizer)
+    eval_data = format_dataset(tokenizer=tokenizer, dataset_path=dataset_path)
     eval_data = eval_data.select(range(min(num_samples, len(eval_data))))
     device = getattr(model, "device", "cuda" if torch.cuda.is_available() else "cpu")
 
@@ -195,12 +204,18 @@ def evaluate(tokenizer, model, num_samples: int = 10, model_label: str = "Model"
     return avg_wer, avg_cer, avg_precision, avg_recall, avg_f1
 
 
-def batch_evaluate(tokenizer, model, batch_size: int = 8, model_label: str = "Model"):
+def batch_evaluate(
+    tokenizer,
+    model,
+    batch_size: int = 8,
+    model_label: str = "Model",
+    dataset_path: str = None,
+):
     """
     Batched parallel evaluation pipeline.
     Uses left-padding for decoder-only models and vectorized batch generation.
     """
-    eval_data = format_dataset(tokenizer=tokenizer)
+    eval_data = format_dataset(tokenizer=tokenizer, dataset_path=dataset_path)
     device = next(model.parameters()).device
 
     # LEFT-pad: decoder-only models need this for batched generation
@@ -321,7 +336,12 @@ def print_comparison_report(base_metrics, ft_metrics):
 
 
 def _spawn_worker(
-    model_name: str, queue, device_id: int, model_label: str, batch_size: int = 8
+    model_name: str,
+    queue,
+    device_id: int,
+    model_label: str,
+    batch_size: int = 8,
+    dataset_path: str = None,
 ):
     """Worker process for torch.multiprocessing parallel evaluation."""
     try:
@@ -334,6 +354,7 @@ def _spawn_worker(
             model=model,
             batch_size=batch_size,
             model_label=model_label,
+            dataset_path=dataset_path,
         )
         del model
         del tokenizer
@@ -344,7 +365,11 @@ def _spawn_worker(
 
 
 def _thread_worker(
-    model_name: str, device_id: int, model_label: str, batch_size: int = 8
+    model_name: str,
+    device_id: int,
+    model_label: str,
+    batch_size: int = 8,
+    dataset_path: str = None,
 ):
     """Worker task for ThreadPoolExecutor parallel evaluation."""
     device = f"cuda:{device_id}"
@@ -356,6 +381,7 @@ def _thread_worker(
             model=model,
             batch_size=batch_size,
             model_label=model_label,
+            dataset_path=dataset_path,
         )
         del model
         del tokenizer
@@ -382,6 +408,12 @@ if __name__ == "__main__":
         help="Fine-Tuned model Path or Huggingface Face repo where stored.",
     )
 
+    parse.add_argument(
+        "--eval-dataset",
+        type=str,
+        default=None,
+        help="Path to evaluation dataset JSON file",
+    )
     parse.add_argument(
         "--num-samples",
         type=int,
@@ -417,7 +449,11 @@ if __name__ == "__main__":
             print(f"\n--- Inspecting {label} [{model_name}] ---")
             model, tokenizer = load_model(model_name)
             avg_wer, avg_cer, avg_precision, avg_recall, avg_f1 = evaluate(
-                tokenizer, model, num_samples=args.num_samples, model_label=label
+                tokenizer,
+                model,
+                num_samples=args.num_samples,
+                model_label=label,
+                dataset_path=args.eval_dataset,
             )
             print(
                 f"[{label}] WER : {avg_wer:.4f} | CER : {avg_cer:.4f} | F1 : {avg_f1:.4f}"
@@ -538,6 +574,7 @@ if __name__ == "__main__":
                     model=model,
                     batch_size=args.batch_size,
                     model_label="Baseline",
+                    dataset_path=args.eval_dataset,
                 )
             else:
                 print(f"\n🎯 [Rank {local_rank}] Loading Fine-Tuned Model on {device}...")
@@ -549,6 +586,7 @@ if __name__ == "__main__":
                     model=model,
                     batch_size=args.batch_size,
                     model_label="Fine-Tuned",
+                    dataset_path=args.eval_dataset,
                 )
 
             # Free GPU memory after evaluation
