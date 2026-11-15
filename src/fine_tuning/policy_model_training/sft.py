@@ -67,25 +67,42 @@ def _process_batch_examples(batch):
     return {"text": samples}
 
 
-def format_dataset(path: str = None):
-    if path is None:
-        candidates = [
+def format_dataset(train_path: str = None, eval_path: str = None):
+    if train_path is None:
+        train_candidates = [
             os.path.abspath(
                 os.path.join(
                     os.path.dirname(__file__),
-                    "../../../datasets/policy_model_dataset/combined_dataset.jsonl",
+                    "../../../datasets/policy_model_dataset/data/sft_train.json",
                 )
             ),
-            "./fine-tuning/datasets/policy_model_dataset/combined_dataset.jsonl",
-            "./datasets/policy_model_dataset/combined_dataset.jsonl",
-            "/kaggle/working/fine-tuning/datasets/policy_model_dataset/combined_dataset.jsonl",
+            "./fine-tuning/datasets/policy_model_dataset/data/sft_train.json",
+            "./datasets/policy_model_dataset/data/sft_train.json",
+            "/kaggle/working/fine-tuning/datasets/policy_model_dataset/data/sft_train.json",
         ]
-        path = next((c for c in candidates if os.path.exists(c)), candidates[0])
+        train_path = next((c for c in train_candidates if os.path.exists(c)), train_candidates[0])
 
-    datasets = load_dataset("json", data_files=path, split="train")
-    datasets = datasets.map(_process_batch_examples, batched=True)
-    split = datasets.train_test_split(test_size=0.1, seed=42)
-    return split["train"], split["test"]
+    if eval_path is None:
+        eval_candidates = [
+            os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "../../../datasets/policy_model_dataset/data/sft_eval.json",
+                )
+            ),
+            "./fine-tuning/datasets/policy_model_dataset/data/sft_eval.json",
+            "./datasets/policy_model_dataset/data/sft_eval.json",
+            "/kaggle/working/fine-tuning/datasets/policy_model_dataset/data/sft_eval.json",
+        ]
+        eval_path = next((c for c in eval_candidates if os.path.exists(c)), eval_candidates[0])
+
+    train_data = load_dataset("json", data_files=train_path, split="train")
+    eval_data = load_dataset("json", data_files=eval_path, split="train")
+
+    train_data = train_data.map(_process_batch_examples, batched=True)
+    eval_data = eval_data.map(_process_batch_examples, batched=True)
+
+    return train_data, eval_data
 
 
 train_dataset, test_dataset = format_dataset()
