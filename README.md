@@ -1,42 +1,63 @@
 ---
 license: cc0-1.0
 task_categories:
-  - text-generation
   - text2text-generation
+  - text-generation
   - automatic-speech-recognition
 language:
   - en
 tags:
-  - asr-error-correction
-  - whisper
-  - speech-to-text
+  - asr-post-refinement
   - post-asr-correction
+  - text-refinement
+  - speech-to-text
+  - whisper
   - generative-error-correction
   - llm-fine-tuning
 size_categories:
   - 10K<n<100K
 ---
 
-# Whisper ASR Acoustic Noise & Error Correction Dataset
+# Post-ASR Text Refinement & Correction Dataset
 
-A benchmark dataset of **13,295 training samples** and **358 evaluation samples** engineered for training Large Language Models (LLMs) and policy models on **Generative Post-ASR Error Correction**.
+A benchmark dataset of **13,295 training samples** and **358 evaluation samples** engineered for training Large Language Models (LLMs) and policy models on **Post-ASR Text Refinement**.
 
-Every sample pairs noisy, spoken-phonetic automatic speech recognition output (`raw_asr`) with clean, verified ground truth (`refined_text`). The noise distribution accurately mirrors OpenAI Whisper's acoustic decoder behavior under noisy microphone and rapid speech conditions.
-
----
-
-## Why This Dataset?
-
-Most public synthetic ASR correction datasets suffer from **mechanical shortcuts**:
-- **Suffix Chopping**: Artificially chopping endings off words (`"minut"`, `"automat"`, `"releas"`). Real Whisper decoders output real dictionary words.
-- **Lazy Space Splits**: Merely inserting spaces into compound words (`"database"` -> `"data base"`).
-- **Uniform Distortion**: Treating all tokens equally rather than corrupting natural weak spots like jargon and phonetic boundaries.
-
-This dataset was audited and calibrated to enforce **100% real English dictionary tokens**, **phonetic multi-word boundary shifts**, and **true homophone confusions**.
+In speech-to-text pipelines, Automatic Speech Recognition (ASR) engines produce raw transcripts with acoustic errors, homophone confusions, and phonetic boundary shifts. This dataset trains a downstream refinement model to take noisy speech output (`raw_asr`) and transform it into clean, domain-accurate ground truth (`refined_text`).
 
 ---
 
-## Dataset Statistics & Calibration
+## The Post-ASR Refinement Task
+
+```
+[ Spoken Audio ] 
+       │
+       ▼
+[ Speech-to-Text (ASR) ]  ──►  raw_asr (Noisy, phonetic transcription)
+                                  │
+                                  ▼
+                       [ Post-Refinement Model (LLM) ]
+                                  │
+                                  ▼
+                              refined_text (Clean, polished ground truth)
+```
+
+- **Input (`raw_asr`)**: Raw ASR transcript with realistic Whisper acoustic errors (25%–40% WER, multi-word boundary shifts, phonetic homophones, and misheard technical jargon).
+- **Target (`refined_text`)**: Clean, verified, domain-correct text with 100% frozen ground truth.
+
+---
+
+## Why Existing Synthetic Datasets Fail at Refinement
+
+Most synthetic datasets for post-ASR refinement use **unrealistic distortion shortcuts**:
+- **Suffix Chopping**: Chopping letters off word endings (`"minut"`, `"automat"`, `"releas"`). Real ASR decoders output valid dictionary words.
+- **Lazy Space-Splitting**: Merely inserting spaces into compound words (`"database"` -> `"data base"`).
+- **Robotic Character Edits**: Uniform character flips that do not match spoken phonetics.
+
+This dataset was calibrated to ensure **100% real English dictionary tokens**, **phonetic multi-word boundary shifts** (e.g., `asynchronous` -> `sink cronus`), and **recoverable acoustic noise**.
+
+---
+
+## Dataset Statistics & Verification
 
 All samples pass strict programmatic audit gates with exit code 0:
 
@@ -53,10 +74,10 @@ All samples pass strict programmatic audit gates with exit code 0:
 
 ---
 
-## The 6 Whisper Acoustic Mechanisms Simulated
+## The 6 Acoustic Mechanisms for Post-ASR Refinement
 
 1. **Multi-Word Boundary Shifts (25.8% of edits)**
-   - Single words transcribed as multiple phonetic words:
+   - Words split or merged phonetically:
      - `asynchronous` -> `sink cronus` / `a sink cronus`
      - `database` -> `day till base` / `day to base`
      - `pipeline` -> `pipe lane`
@@ -67,20 +88,17 @@ All samples pass strict programmatic audit gates with exit code 0:
    - `write` -> `right`
    - `serial` -> `cereal`
    - `brake` -> `break`
-   - `root` -> `route`
-3. **Technical Acronym Expansion & Distortion**
+3. **Technical Acronyms & Command Dictation**
    - `TLS` -> `tee el ess`
    - `CPU` -> `see pee you`
-   - `HTTP` -> `h t t p`
-   - `BGP` -> `bee gee pee`
-4. **Natural Speech Fast-Articulation Blurs**
-   - `because` -> `cause` / `be cause`
-   - `what if I wrote` -> `what reason I authored`
-   - `going a little too fast` -> `going the little too fast`
-5. **Technical Token & CLI Dictation Phonetics**
    - `dxc.exe` -> `d x c dot exe`
    - `--program` -> `dash dash program`
-   - `sysctl -a` -> `sysctl dash a`
+4. **Fast Speech Articulation Blurs**
+   - `what if I wrote` -> `what reason I authored`
+   - `going a little too fast` -> `going the little too fast`
+5. **Domain Vocabulary Distortion**
+   - `sysctl net.core.somaxconn` -> `net dot core dot socket quota`
+   - `Transit Gateway` -> `transit gate way line`
 6. **Lexical Semantic Drifts (Contextual Mishearings)**
    - `approved` -> `granted`
    - `traffic` -> `flow`
@@ -88,19 +106,19 @@ All samples pass strict programmatic audit gates with exit code 0:
 
 ---
 
-## Sample Preview (Side-by-Side Comparison)
+## Sample Preview: Post-ASR Refinement
 
-### Example 1: Infrastructure & Distributed Systems
-- **Refined Text (Ground Truth)**:
-  > Our engineering council approved NATS JetStream persistence for asynchronous messaging by replacing RabbitMQ quorum queues.
-- **Raw ASR (Spoken Noise)**:
+### Example 1: Distributed Systems
+- **Input (`raw_asr`)**:
   > Our engineering council granted NATS JetStream persistence towards the sink cronus messaging by replacing RabbitMQ quorum cues.
+- **Output (`refined_text`)**:
+  > Our engineering council approved NATS JetStream persistence for asynchronous messaging by replacing RabbitMQ quorum queues.
 
-### Example 2: Linux Kernel & Network Tuning
-- **Refined Text (Ground Truth)**:
-  > Profiling using performance analysis tools demonstrated that competing thread locks around sysctl net.core.somaxconn caused excessive context switching and cpu starvation.
-- **Raw ASR (Spoken Noise)**:
+### Example 2: Kernel & Network Tuning
+- **Input (`raw_asr`)**:
   > Profiling employing performance analysis tools exhibited which competing thread locks approximately sysctl net dot core dot socket quota triggered excessive scope switching plus cpu starvation.
+- **Output (`refined_text`)**:
+  > Profiling using performance analysis tools demonstrated that competing thread locks around sysctl net.core.somaxconn caused excessive context switching and cpu starvation.
 
 ---
 
@@ -123,7 +141,6 @@ print(f"Loaded {len(train_data)} train and {len(eval_data)} eval samples.")
 ```python
 from datasets import load_dataset
 
-# Load directly into Hugging Face Dataset format
 dataset = load_dataset("json", data_files={
     "train": "https://raw.githubusercontent.com/kumar-pankaj0/datasets/main/policy_model_dataset/data/sft_train.json",
     "test": "https://raw.githubusercontent.com/kumar-pankaj0/datasets/main/policy_model_dataset/data/sft_eval.json"
@@ -134,19 +151,19 @@ print(dataset)
 
 ---
 
-## Training a Policy Model / LLM with SFT
+## Fine-Tuning a Post-ASR Refinement Model
 
-This prompt format trains the model to act as a real-time speech error correction engine:
+This prompt template trains an LLM to refine raw speech transcripts into polished text:
 
 ```python
-def format_prompt(sample):
-    instruction = (
-        "You are an expert speech-to-text post-processing engine. "
-        "Restore the following noisy ASR transcription to its clean, intended ground-truth text. "
-        "Correct all phonetic substitutions, misheard jargon, and boundary shifts while preserving original meaning."
+def format_refinement_prompt(sample):
+    system_prompt = (
+        "You are an expert Post-ASR Refinement engine. "
+        "Your task is to refine the following raw speech-to-text transcript into clean, domain-accurate text. "
+        "Restore misheard jargon, fix phonetic substitutions, and correct multi-word boundary shifts while preserving original meaning."
     )
     return (
-        f"<|im_start|>system\n{instruction}<|im_end|>\n"
+        f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{sample['raw_asr']}<|im_end|>\n"
         f"<|im_start|>assistant\n{sample['refined_text']}<|im_end|>"
     )
@@ -156,4 +173,4 @@ def format_prompt(sample):
 
 ## License & Attribution
 
-This dataset is released under the **Creative Commons Zero v1.0 Universal (CC0-1.0)** public domain dedication. You are free to copy, modify, distribute, and perform the work, even for commercial purposes, without asking permission.
+This dataset is released under the **Creative Commons Zero v1.0 Universal (CC0-1.0)** public domain dedication. You are free to copy, modify, distribute, and train commercial models without restriction.
